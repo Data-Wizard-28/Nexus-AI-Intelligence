@@ -1,0 +1,10 @@
+streamlit
+pymupdf
+langchain
+langchain-community
+langchain-openai
+langchain-huggingface
+langchain-text-splitters
+faiss-cpu
+rank_bm25
+sentence-transformers

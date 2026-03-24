@@ -1,0 +1,12 @@
+RAG_ENV/
+venv/
+env/
+.streamlit/
+.env
+__pycache__/
+*.py[cod]
+highlighted.pdf
+faiss_index/
+processed_files.json
+.DS_Store
+.vscode/
