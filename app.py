@@ -53,9 +53,58 @@ st.markdown("""
         padding: 4px 10px; border-radius: 8px; font-size: 0.75rem; font-weight: 600;
     }
 
+    /* --- PULSE DOTS --- */
     .pulse-dot { height: 8px; width: 8px; border-radius: 50%; display: inline-block; margin-right: 5px; }
     .pulse-green { background-color: #3fb950; box-shadow: 0 0 8px #3fb950; }
     .pulse-red { background-color: #f85149; box-shadow: 0 0 8px #f85149; }
+
+    /* --- TOGGLE: override Streamlit red with theme blue --- */
+    [data-testid="stToggle"] > div[data-checked="true"],
+    [data-testid="stToggle"][aria-checked="true"] > div {
+        background-color: #58a6ff !important;
+    }
+    /* The thumb track when ON */
+    [data-testid="stToggle"] > label > div[data-testid="stToggleTrack"] {
+        background-color: #58a6ff !important;
+    }
+    /* Broader Streamlit internal toggle selectors (covers 1.30+) */
+    .st-toggle-track-checked { background-color: #58a6ff !important; }
+    [class*="toggleTrack"][data-checked="true"] { background-color: #58a6ff !important; }
+    /* Catch-all: any checked toggle track inside sidebar */
+    [data-testid="stSidebar"] input[type="checkbox"]:checked + div,
+    [data-testid="stSidebar"] input[type="checkbox"]:checked ~ div {
+        background-color: #58a6ff !important;
+    }
+    /* Streamlit 1.35+ uses this pattern */
+    div[data-baseweb="toggle"] > div:first-child[class*="checked"] {
+        background-color: #58a6ff !important;
+    }
+    div[data-baseweb="toggle"] > div[class*="Track"]:has(~ input:checked) {
+        background-color: #58a6ff !important;
+    }
+    /* Most reliable catch-all for BaseWeb toggle */
+    [data-baseweb="toggle"] [class*="Track"] { transition: background 0.2s; }
+    [data-baseweb="toggle"]:has(input:checked) [class*="Track"] {
+        background-color: #58a6ff !important;
+    }
+
+    /* --- CHAT CONTAINER BORDER: override red accent with theme blue --- */
+    [data-testid="stVerticalBlockBorderWrapper"] {
+        border-color: #30363d !important;
+    }
+    /* st.container(height=...) scroll container border */
+    [data-testid="stVerticalBlockBorderWrapper"] > div {
+        border-color: #30363d !important;
+    }
+    /* The actual scrollable block */
+    div[data-testid="stVerticalBlock"] > div[style*="overflow"] {
+        border: 1px solid #30363d !important;
+        border-radius: 8px;
+    }
+    /* Streamlit 1.40 height-container wrapper */
+    .stHeightContainer, [class*="heightContainer"] {
+        border-color: #30363d !important;
+    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -69,6 +118,26 @@ state_keys = {"chat": [], "rag": None, "highlights": [], "file_path": None, "cur
 for k, v in state_keys.items():
     if k not in st.session_state:
         st.session_state[k] = v
+
+# ---------------- PDF PAGE RENDERER ----------------
+def render_pdf_page(pdf_path: str, page_num: int, dpi: int = 150):
+    """
+    Rasterize a single PDF page to a PNG using PyMuPDF.
+    Returns raw PNG bytes. Works on local, deployed, and HTTPS environments
+    because it never relies on browser PDF plugins or base64 iframe embedding.
+    """
+    try:
+        doc = fitz.open(pdf_path)
+        page_idx = max(0, min(page_num, len(doc) - 1))
+        page = doc[page_idx]
+        mat = fitz.Matrix(dpi / 72, dpi / 72)  # 72 dpi is PDF default
+        pix = page.get_pixmap(matrix=mat, alpha=False)
+        png_bytes = pix.tobytes("png")
+        doc.close()
+        return png_bytes, len(doc)
+    except Exception as e:
+        print(f"[PDF Render] Error: {e}")
+        return None, 0
 
 # ---------------- SIDEBAR ----------------
 with st.sidebar:
@@ -135,7 +204,7 @@ with st.sidebar:
         st.markdown('<div class="section-label">🛠️ Developer</div>', unsafe_allow_html=True)
         debug_on = st.toggle("Debug Traceback", value=False)
 
-    # Download highlighted PDF (only shown when a doc is loaded and highlighted)
+    # Download highlighted PDF
     if st.session_state.file_path and os.path.exists("highlighted.pdf"):
         with open("highlighted.pdf", "rb") as f:
             st.download_button(
@@ -244,42 +313,35 @@ with col1:
 with col2:
     if st.session_state.file_path:
         dp = "highlighted.pdf" if os.path.exists("highlighted.pdf") else st.session_state.file_path
-        with open(dp, "rb") as f:
-            b64 = base64.b64encode(f.read()).decode()
 
-        page_num = st.session_state.current_page + 1
-        salt = st.session_state.pdf_salt
+        # Page navigation controls
+        _, total_pages = render_pdf_page(dp, 0)  # quick call just to get page count
+        if total_pages > 0:
+            nav_col1, nav_col2, nav_col3 = st.columns([1, 2, 1])
+            with nav_col1:
+                if st.button("◀ Prev", use_container_width=True):
+                    st.session_state.current_page = max(0, st.session_state.current_page - 1)
+                    st.rerun()
+            with nav_col2:
+                st.markdown(
+                    f"<div style='text-align:center; color:#8b949e; font-size:0.85rem; padding-top:8px;'>"
+                    f"Page {st.session_state.current_page + 1} of {total_pages}</div>",
+                    unsafe_allow_html=True
+                )
+            with nav_col3:
+                if st.button("Next ▶", use_container_width=True):
+                    st.session_state.current_page = min(total_pages - 1, st.session_state.current_page + 1)
+                    st.rerun()
 
-        # Use components.html instead of st.markdown iframe —
-        # base64 iframes are blocked on HTTPS/deployed apps by browsers.
-        # components.html renders inside its own sandboxed iframe served
-        # from the Streamlit component origin, which bypasses that restriction.
-        components.html(
-            f"""
-            <style>
-                body {{ margin: 0; padding: 0; background: #0d1117; }}
-                .pdf-wrapper {{
-                    border: 1px solid #30363d;
-                    border-radius: 16px;
-                    background: #0d1117;
-                    padding: 10px;
-                    box-sizing: border-box;
-                }}
-                embed {{
-                    border: none;
-                    border-radius: 10px;
-                    display: block;
-                }}
-            </style>
-            <div class="pdf-wrapper">
-                <embed
-                    src="data:application/pdf;base64,{b64}#page={page_num}&v={salt}"
-                    type="application/pdf"
-                    width="100%"
-                    height="820px"
-                />
-            </div>
-            """,
-            height=850,
-            scrolling=False,
-        )
+            # Render current page as image — works on all platforms including HTTPS/deployed
+            png_bytes, _ = render_pdf_page(dp, st.session_state.current_page, dpi=150)
+            if png_bytes:
+                st.markdown(
+                    "<div style='border: 1px solid #30363d; border-radius: 16px; "
+                    "background: #0d1117; padding: 10px; margin-top: 8px;'>",
+                    unsafe_allow_html=True
+                )
+                st.image(png_bytes, use_container_width=True)
+                st.markdown("</div>", unsafe_allow_html=True)
+            else:
+                st.error("Could not render PDF page.")
